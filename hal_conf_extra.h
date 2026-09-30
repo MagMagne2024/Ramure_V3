@@ -1,0 +1,20 @@
+#ifndef HAL_CONF_EXTRA_H_
+#define HAL_CONF_EXTRA_H_
+
+#define D_CACHE_DISABLED
+
+#if !defined(HAL_LTDC_MODULE_ENABLED)
+#define HAL_LTDC_MODULE_ENABLED
+#endif
+
+#if !defined(HAL_SDRAM_MODULE_ENABLED)
+#define HAL_SDRAM_MODULE_ENABLED
+#endif
+
+#ifndef ENABLE_HWSERIAL6
+#define ENABLE_HWSERIAL6
+//#define PIN_SERIAL6_TX PC_6
+//#define PIN_SERIAL6_RX PC_7
+#endif
+
+#endif /* HAL_CONF_EXTRA_H_ */
