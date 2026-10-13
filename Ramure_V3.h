@@ -9,11 +9,12 @@
 #define RAMURE_V3_H_
 
 #include "Arduino.h"
-/*
+
 #include <string.h>
 #include <cstring>
 #include <stdio.h>
-#include <stdlib.h>*/
+#include <stdlib.h>
+// #include <MCP24LC512.h>
 
 #ifndef RAMURE_LVGL
 #define RAMURE_LVGL 1       /**< 1 to enable LVGL, 0 to disable */
@@ -227,6 +228,16 @@ struct Alarm {
     uint32_t last;
 };
 
+
+struct Time {
+	uint8_t annee;
+	uint8_t mois;
+	uint8_t jour;
+	uint8_t heure;
+	uint8_t minutes;
+	uint8_t secondes;
+};
+
 /**
  * @struct Worker
  * @brief
@@ -243,13 +254,16 @@ struct Worker {
     uint32_t delay;
     double target;
     Voltage voltage;
-    Voltage current;
+    Current current;
     Network network;
     String mobile;
+    Time  time ;
     bool store;
     uint32_t last;
     Alarm alarms[Alarm::Count];
 
 };
+
+
 
 #endif /* RAMURE_V3_H_ */

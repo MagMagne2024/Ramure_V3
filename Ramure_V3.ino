@@ -1,5 +1,20 @@
 #include <Ramure_V3.h>
 
+
+#include "I2CScanner.h"
+I2CScanner scanner;
+
+const uint8_t num_addresses = 4;
+const byte addresses[num_addresses] = { 0x20, 0x21, 0x40, 0x41 };
+bool results[num_addresses] = { false, false, false, false};
+
+#include "I2C_24LC1025.h"
+I2C_24LC1025 ee(0x50);
+uint32_t start, stop;
+
+int cpt_miss_network =0;
+
+
 unsigned int boot __attribute__((__section__(".noinit")));
 
 Worker worker;
@@ -85,6 +100,7 @@ void lvgl_init(void) {
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, lvgl_input_read);
+    serial_printf("[LVGL] Init done \n");
 }
 
 lv_obj_t* lvgl_probe[DS18B20_COUNT];
@@ -264,6 +280,8 @@ void lvgl_setup() {
         lvgl_power[1] = lv_label_create(object);
         lv_label_set_text(lvgl_power[1], "-");
     }
+
+    serial_printf("[LVGL] Setup done \n");
 }
 
 #if 0
@@ -273,7 +291,7 @@ static void event_handler(lv_event_t *event) {
 #endif
 
 void lvgl_loop() {
-    watchdog_loop();
+  watchdog_loop();
     for (auto index = 0; index < DS18B20_COUNT; ++index) {
         if (worker.probes >> index & 1) {
             lv_label_set_text_fmt(lvgl_probe[index], "%.2f °C", worker.temperatures[index]);
@@ -291,8 +309,6 @@ void HAL_SYSTICK_Callback(void) {
 }
 
 #endif
-
-
 
 
 void path_affectation()
@@ -357,6 +373,53 @@ String worker_json() {
     serial_printf("[JSON] %s\n", string.c_str());
     return string;
 }
+
+String worker_eeprom_json(int cpt ) {
+    JsonDocument document;
+    document["relays"] = ee.readByte(cpt * 0x10 + 0x10  );
+#if 0
+    JsonArray temperatures = document["temperature"].to<JsonArray>();
+    for (auto index = 0; index < DS18B20_COUNT; ++index) {
+
+       // temperatures.add(worker.temperatures[index]);
+    	ee.readByte((cpt * 0x10 ) + (0x10  + index +1));
+    }
+#else
+    for (auto index = 0; index < DS18B20_COUNT; ++index) {
+        String temperature = "temperature_" + String(index);
+        document[temperature] = 	ee.readByte((cpt * 0x10 ) + (0x10 +index +1));  //worker.temperatures[index];
+    }
+#endif
+    document["light"] = (( ee.readByte(cpt * 0x10 + 0x17)) <<8 )+ (ee.readByte(cpt * 0x10 + 0x16)) ; //worker.light;
+
+    JsonObject psu = document["psu"].to<JsonObject>();
+
+    psu["status"] = worker.status;
+    JsonObject voltage = psu["voltage"].to<JsonObject>();
+    voltage["set"] = worker.voltage.set;
+    voltage["get"] = worker.voltage.get;
+    voltage["out"] =  (ee.readByte(cpt * 0x10 + 0x18))/10 ;  // worker.voltage.out;
+
+    JsonObject current = psu["current"].to<JsonObject>();
+    current["set"] = worker.current.set;
+    current["get"] = worker.current.get;
+    current["out"] = (ee.readByte(cpt * 0x10 + 0x19))/10 ;   //worker.current.out;
+
+    document["id"] = worker.network.mqtt.topic2;
+
+
+    UTC_time = "";
+    UTC_time  = UTC_time +"20"+ ee.readByte(cpt * 0x10 + 0x1A ) +"-" + ee.readByte(cpt * 0x10 + 0x1B ) +"-" + ee.readByte(cpt * 0x10 + 0x1C )+ "T" + ee.readByte(cpt * 0x10 + 0x1D )+":" + ee.readByte(cpt * 0x10 + 0x1E ) +":"+ ee.readByte(cpt * 0x10 + 0x1F ) ;
+//	Serial.printf(UTC_time.c_str()); Serial.printf("\n");
+    document["UTC_Time"] = UTC_time.c_str() ; //"to be defined";
+
+    String string;
+    document.shrinkToFit();
+    serializeJson(document, string);
+    serial_printf("[JSON_eeprom] %s\n", string.c_str());
+    return string;
+}
+
 
 void serial_init() {
 #if RAMURE_SERIAL
@@ -425,6 +488,8 @@ void json_command(String command) {
             fans_loop();
             psu_loop();
             mqtt.publish(path_mqtt_publish.c_str(), worker_json().c_str());
+
+
         } else if (action == "check") {
             uint8_t relays = worker.relays;
             // Stop fans
@@ -523,7 +588,7 @@ void watchdog_status() {
 }
 
 void rtc_init() {
-	// a mettre apres initialisatio sd et networks
+	// a mettre apres initialisation sd et networks
 	// RTC
 	    rtc.setClockSource(STM32RTC::LSE_CLOCK);
 	    rtc.begin();
@@ -540,24 +605,37 @@ void rtc_read_update()
 
     static uint8_t day = 0;
     if (day == rtc.getDay()) {
+        worker.time.annee  =  rtc.getYear();
+        worker.time.mois =  rtc.getMonth();
+        worker.time.jour = rtc.getDay();
+        worker.time.heure = rtc.getHours();
+		worker.time.minutes = rtc.getMinutes();
+		worker.time.secondes = rtc.getSeconds();
+
        Serial.printf("[RTC_UTC_Now] ");
        UTC_time = "";
-       UTC_time  = UTC_time +"20"+ rtc.getYear()+"-" + rtc.getMonth()+"-" +rtc.getDay()+ "T" + rtc.getHours()+":" + rtc.getMinutes()+":"+ rtc.getSeconds();
-		Serial.printf(UTC_time.c_str()); Serial.printf("\n");
+        UTC_time  = UTC_time +"20"+ worker.time.annee +"-" + worker.time.mois +"-" + worker.time.jour+ "T" +  worker.time.heure+":" + worker.time.minutes +":"+ worker.time.secondes ;
+        Serial.printf(UTC_time.c_str()); Serial.printf("\n");
 
     } else {
         if (ntp.update()) {
             Serial.printf("[NTP] updated %s\n", ntp.getFormattedTime().c_str());
             rtc.setEpoch(ntp.getEpochTime());
             day = rtc.getDay();
-         //   Serial.printf("[RTC] day %d\n", day);
-         //   Serial.printf("[RTC] day_update_done");
-         //   Serial.printf("[RTC] date %02d/%02d 20%02d\n", rtc.getDay(), rtc.getMonth(), rtc.getYear());
-          //  Serial.printf("[RTC_UTC] date 20%02d-%02d-%02dT%02d:%02d:%02d\n", rtc.getYear(), rtc.getMonth(),rtc.getDay(),rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
+
+            worker.time.annee  =  rtc.getYear();
+            worker.time.mois =  rtc.getMonth();
+            worker.time.jour = rtc.getDay();
+            worker.time.heure = rtc.getHours();
+			worker.time.minutes = rtc.getMinutes();
+			worker.time.secondes = rtc.getSeconds();
+
+
         Serial.printf("[RTC_UTC_Update] ");
         UTC_time = "";
-        UTC_time  = UTC_time +"20"+ rtc.getYear()+"-" + rtc.getMonth()+"-" +rtc.getDay()+ "T" + rtc.getHours()+":" + rtc.getMinutes()+":"+ rtc.getSeconds();
+        UTC_time  = UTC_time +"20"+ worker.time.annee +"-" + worker.time.mois +"-" + worker.time.jour+ "T" +  worker.time.heure+":" + worker.time.minutes +":"+ worker.time.secondes ;
 		Serial.printf(UTC_time.c_str()); Serial.printf("\n");
+
         }
     }
 }
@@ -612,7 +690,7 @@ void sd_init() {
             }
         } else {
             serial_printf("[ERROR] unable to read configuration file\n");
-    #if RAMURE_BENCH
+ //   #if RAMURE_BENCH
             worker.network.dhcp = false;
             worker.network.local.fromString("134.158.124.65");
             worker.network.subnet.fromString("255.255.248.0");
@@ -634,11 +712,34 @@ void sd_init() {
             worker.target = RAMURE_TARGET;
             worker.voltage.set = 8.00;
             worker.current.set = 3.00;
-    #endif
+ //   #endif
         }
         file.close();
     } else {
+    	// ajout
         serial_printf("[ERROR] unable to initialize SD\n");
+
+        worker.network.dhcp = false;
+        worker.network.local.fromString("134.158.124.65");
+        worker.network.subnet.fromString("255.255.248.0");
+        worker.network.gateway.fromString("134.158.120.1");
+        worker.network.dns.fromString("134.158.120.3");
+        worker.network.ntp.server.fromString("134.158.120.1");
+        worker.network.ntp.port = 123;
+        worker.network.mqtt.authentication = true;
+        worker.network.mqtt.topic = "RAMURE/";
+        worker.network.mqtt.topic2 = "LMGE";
+        worker.network.mqtt.username = "RAMURE";
+        worker.network.mqtt.password = "QgQDIKHe63JsRIPs";
+        worker.network.mqtt.server.fromString("134.158.124.133");
+        worker.network.mqtt.port = 1883;
+        worker.mobile = "0684146899";
+        worker.relays = 0x0F;
+        worker.regulate = true;
+        worker.delay = RAMURE_MQTT_DELAY;
+        worker.target = RAMURE_TARGET;
+        worker.voltage.set = 8.00;
+        worker.current.set = 3.00;
     }
     SD.end();
 }
@@ -693,6 +794,8 @@ void sd_store() {
                 mqtt["username"] = worker.network.mqtt.username;
                 mqtt["password"] = worker.network.mqtt.password;
             }
+    //        document["topic"] = worker.network.topic.c_str();
+     //       document["topic2"] = worker.network.topic2.toString();
             document["mobile"] = worker.mobile;
             JsonArray relays = document["relays"].to<JsonArray>();
             for (auto index = 0; index < RELAYS_COUNT; ++index) {
@@ -842,9 +945,40 @@ void mqtt_publish() {
         if (now - worker.last >= worker.delay * 60 * 1000) {
             worker.last = now;
             if (mqtt.publish(path_mqtt_publish.c_str(), worker_json().c_str())) {
-                serial_printf("[MQTT] publish\n");
+
+            	cpt_miss_network = ee.readByte(0);
+                serial_printf("[MQTT] publish  %d\n",cpt_miss_network );
+
+
+                if (cpt_miss_network > 0)
+                {
+                	 serial_printf("[MQTT] publish %d \n", cpt_miss_network);
+
+                	for( int i = 0; i < cpt_miss_network; i++)
+                	{
+                		mqtt.publish(path_mqtt_publish.c_str(), worker_eeprom_json(i).c_str());
+                		serial_printf("[MQTT] publish eeprom %d \n", i);
+                	}
+                	cpt_miss_network = ee.writeByte(0,0);
+
+                }
+
+
+
+                  //******************************
+
+
             } else {
                 serial_printf("[ERROR] unable to publish\n");
+                // ajout ecriture eeprom
+                                 cpt_miss_network = ee.readByte(0);
+                                 serial_printf("[ERROR] cpt_miss_network-before %d \n", cpt_miss_network);
+                                  WR_EEPROM(cpt_miss_network);
+                                  cpt_miss_network = cpt_miss_network +1;
+                                  ee.writeByte(0,cpt_miss_network);
+                                  serial_printf("[ERROR] cpt_miss_network %d \n", cpt_miss_network);
+
+
             }
         }
     }
@@ -1023,6 +1157,7 @@ void fans_loop() {
  */
 void alarm_loop() {
     uint32_t now = rtc.getEpoch();
+   // rtc.
     // Internal
     if (worker.temperatures[0] > ALARM_INTERNAL) {
         // Alarm on
@@ -1085,6 +1220,85 @@ void alarm_loop() {
     }
 }
 
+//*********************************
+void dump(uint32_t from, uint32_t to)
+{
+  for (uint32_t i = from; i < to; i++)  //  I2C_DEVICESIZE_24LC1025
+  {
+    volatile int x = ee.readByte(i);
+    char buffer[24];
+    if (i % 16 == 0)
+    {
+      char buffer[24];
+      Serial.print('\n');
+      sprintf(buffer, "%08lX\t", i);  //  AVR needs lX
+      Serial.print(buffer);
+    }
+    sprintf(buffer, "%02X\t", x);
+    Serial.print(buffer);
+  }
+  Serial.println();
+}
+
+
+void test(uint32_t offset)
+{
+  Serial.println();
+
+  for (int i = 0; i < 10; i++)
+  {
+    ee.writeByte(offset + i, i);
+    Serial.println(offset + i);
+    delay(10);
+  }
+
+  for (int i = 0; i < 10; i++)
+  {
+    if (i % 10 == 0) Serial.print('\n');
+    Serial.print(ee.readByte(offset + i));
+    Serial.print('\t');
+    delay(10);
+  }
+  Serial.print('\n');
+}
+//***********************************
+void WR_EEPROM(int cpt)
+{
+ //   ee.writeByte(0, 21);
+ //   Serial.println(ee.readByte(0));
+
+ee.writeByte(0, cpt);
+
+int Addr_EEprom = 0x00010 *cpt;
+serial_printf("[EEPROM] write memory\n");
+
+ee.writeByte((Addr_EEprom + 0x10), uint8_t(worker.relays));
+ee.writeByte((Addr_EEprom + 0x11), uint8_t(worker.temperatures[0]));
+ee.writeByte((Addr_EEprom + 0x12), uint8_t(worker.temperatures[1]));
+ee.writeByte((Addr_EEprom + 0x13), uint8_t(worker.temperatures[2]));
+ee.writeByte((Addr_EEprom + 0x14), uint8_t(worker.temperatures[3]));
+ee.writeByte((Addr_EEprom + 0x15), uint8_t(worker.temperatures[4]));
+ee.writeByte((Addr_EEprom + 0x16), uint8_t(worker.light)& 0xFF);
+ee.writeByte((Addr_EEprom + 0x17), uint8_t((worker.light)& 0xFF00)>>8);
+ee.writeByte((Addr_EEprom + 0x18), uint8_t(worker.voltage.out *10));
+ee.writeByte((Addr_EEprom + 0x19), uint8_t(worker.current.out *10));
+ee.writeByte((Addr_EEprom + 0x1A), uint8_t(worker.time.annee));
+ee.writeByte((Addr_EEprom + 0x1B), uint8_t(worker.time.mois));
+ee.writeByte((Addr_EEprom + 0x1C), uint8_t(worker.time.jour));
+ee.writeByte((Addr_EEprom + 0x1D), uint8_t(worker.time.heure));
+ee.writeByte((Addr_EEprom + 0x1E), uint8_t(worker.time.minutes));
+ee.writeByte((Addr_EEprom + 0x1F), uint8_t(worker.time.secondes));
+
+serial_printf("[EEPROM] Write  memory :  %d , %d \n",cpt, ee.readByte(0) );
+
+int display_begin = Addr_EEprom -0x10;
+int display_end = Addr_EEprom + 0x10;
+dump(display_begin, display_end);
+serial_printf("[EEPROM] End read memory\n");
+}
+
+//************************************************
+
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     serial_init();
@@ -1108,11 +1322,33 @@ void setup() {
     sdram.begin();
     tft.begin();
     ts.begin();
-//#if RAMURE_LVGL
+
+#if RAMURE_LVGL
     lvgl_init();
     lvgl_setup();
-//#endif
+#endif
     watchdog_init();
+
+// add scanner i2c
+    Serial.println("Scanner init  ");
+	scanner.Init();
+    Serial.println("Scanner scan  ");
+
+    scanner.Scan();
+    Serial.println("Scanner END scan  ");
+    //*******************************************
+    Wire.begin();
+    if (! ee.begin())
+    {    Serial.println("EEPROM not found...");
+      while (1);    }
+// write read eeprom
+  /*  Serial.println("\nwriting and reading in the low block");
+    ee.writeByte(0, 21);
+    ee.writeByte(1, 22);
+    Serial.println(ee.readByte(0));
+    Serial.println(ee.readByte(1));
+*/
+    ee.writeByte(0, 0);  //Mise a zeo de l'eeprom au demarrage a enlever a terme'
 }
 
 extern "C" char* sbrk(int incr);
@@ -1143,3 +1379,4 @@ if (RAMURE_FAN == 1)
     sd_loop();
     serial_printf("[RAM] free memory %d bytes\n", freemem());
 }
+
